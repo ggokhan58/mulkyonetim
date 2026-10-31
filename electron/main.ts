@@ -3,7 +3,8 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createRequire } from 'node:module'
 import fs from 'node:fs'
-import { autoUpdater } from 'electron-updater';
+import { buildExcelWorkbook } from './excel-export'
+import { startUpdates } from './updates';
 
 const currentDir = path.dirname(fileURLToPath(import.meta.url))
 const require = createRequire(import.meta.url)
@@ -99,6 +100,13 @@ try { db.exec('ALTER TABLE payments ADD COLUMN bekir_payi REAL DEFAULT 0'); } ca
 try { db.exec('ALTER TABLE payments ADD COLUMN tarik_payi REAL DEFAULT 0'); } catch (e) {}
 try { db.exec('ALTER TABLE payments ADD COLUMN halil_payi REAL DEFAULT 0'); } catch (e) {}
 
+try { db.exec('ALTER TABLE payments ADD COLUMN ozcam_payi REAL DEFAULT 0'); } catch (e) {}
+// Mevcut kayıtları koruyarak yeni kasanın pay sütununu ekle.
+if (!db.prepare('PRAGMA table_info(payments)').all().some((column: any) => column.name === 'ozcam_insaat_payi')) {
+  db.exec('ALTER TABLE payments ADD COLUMN ozcam_insaat_payi REAL DEFAULT 0');
+}
+try { db.exec('ALTER TABLE transfers ADD COLUMN destination_account TEXT DEFAULT "Dışarıya Harcama / Gider"'); } catch (e) {}
+
 function createWindow(): void {
   // Derlenmiş dosya genelde aynı klasörde yer alır
   const preloadPath = path.join(currentDir, 'preload.cjs'); // Vite standart olarak .mjs veya .js kullanır
@@ -135,8 +143,7 @@ function createWindow(): void {
 }
 
 app.whenReady().then(() => {
-// Arka planda sessizce güncellemeyi kontrol eder, bulursa indirir ve kurar.
-  autoUpdater.checkForUpdatesAndNotify();
+  startUpdates();
   
   // ─── ANA TABLOYU ÇEKME SORGUSU (Güncellendi) ───
   ipcMain.handle('get-properties', () => {
@@ -159,6 +166,7 @@ app.whenReady().then(() => {
         COALESCE(lp.status, '—') as payment_status,
         COALESCE(lp.note, '') as deduction_note,
         COALESCE(lp.deduction_amount, 0) as deduction_amount,
+        lp.amount_paid as last_amount_paid,
         lp.month as last_month,
         lp.year as last_year
       FROM properties p
@@ -287,22 +295,22 @@ ipcMain.handle('add-property', (_event, property) => {
     return false;
   });
   
-  // ─── ÖDEME KAYDETME/GÜNCELLEME (Kesinti Tutarı Eklendi) ───
+// ─── ÖDEME KAYDETME/GÜNCELLEME ───
   ipcMain.handle('save-payment', (_event, payment) => {
     if (payment.id) {
       const stmt = db.prepare(`
         UPDATE payments 
-        SET month = ?, year = ?, payment_date = ?, status = ?, amount_paid = ?, deduction_amount = ?, note = ?,payment_method = ?, tahir_payi = ?, bekir_payi = ?, tarik_payi = ?, halil_payi = ?
+        SET month = ?, year = ?, payment_date = ?, status = ?, amount_paid = ?, deduction_amount = ?, note = ?, payment_method = ?, tahir_payi = ?, bekir_payi = ?, tarik_payi = ?, halil_payi = ?, ozcam_payi = ?, ozcam_insaat_payi = ?
         WHERE id = ?
       `);
-      stmt.run(payment.month, payment.year, payment.payment_date, payment.status, payment.amount_paid, payment.deduction_amount, payment.note,payment.payment_method,payment.tahir_payi,payment.bekir_payi,payment.tarik_payi,payment.halil_payi, payment.id);
+      stmt.run(payment.month, payment.year, payment.payment_date, payment.status, payment.amount_paid, payment.deduction_amount, payment.note, payment.payment_method, payment.tahir_payi, payment.bekir_payi, payment.tarik_payi, payment.halil_payi, payment.ozcam_payi, payment.ozcam_insaat_payi ?? 0, payment.id);
       return payment;
     } else {
       const stmt = db.prepare(`
-        INSERT INTO payments (property_id, month, year, payment_date, status, amount_paid, deduction_amount, note,payment_method, tahir_payi, bekir_payi, tarik_payi, halil_payi)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?,?, ?, ?, ?, ?)
+        INSERT INTO payments (property_id, month, year, payment_date, status, amount_paid, deduction_amount, note, payment_method, tahir_payi, bekir_payi, tarik_payi, halil_payi, ozcam_payi, ozcam_insaat_payi)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `);
-      const info = stmt.run(payment.property_id, payment.month, payment.year, payment.payment_date, payment.status, payment.amount_paid, payment.deduction_amount, payment.note,payment.payment_method,payment.tahir_payi,payment.bekir_payi,payment.tarik_payi,payment.halil_payi);
+      const info = stmt.run(payment.property_id, payment.month, payment.year, payment.payment_date, payment.status, payment.amount_paid, payment.deduction_amount, payment.note, payment.payment_method, payment.tahir_payi, payment.bekir_payi, payment.tarik_payi, payment.halil_payi, payment.ozcam_payi, payment.ozcam_insaat_payi ?? 0);
       return { id: info.lastInsertRowid, ...payment };
     }
   });
@@ -314,6 +322,56 @@ ipcMain.handle('add-property', (_event, property) => {
     return true;
   });
 
+
+// Tüm dönemlerdeki kayıtları, arayüz filtrelerinden bağımsız olarak dışa aktarır.
+ipcMain.handle('export-transactions-excel', async () => {
+  let temporaryPath: string | undefined;
+  try {
+    const result = await dialog.showSaveDialog({
+      title: 'Tüm İşlemleri Excel Olarak Kaydet',
+      defaultPath: `islemler_${new Date().toISOString().slice(0, 10)}.xlsx`,
+      filters: [{ name: 'Excel Çalışma Kitabı', extensions: ['xlsx'] }]
+    });
+    if (result.canceled || !result.filePath) return { canceled: true };
+    // İki liste aynı veritabanı anlık görüntüsünden alınır.
+    const { payments, transfers } = db.transaction(() => ({
+      payments: db.prepare(`
+        SELECT pay.*, COALESCE(p.name, 'Silinmiş mülk') AS property_name,
+               COALESCE(p.tenant, '') AS tenant
+        FROM payments pay LEFT JOIN properties p ON p.id = pay.property_id
+        ORDER BY pay.payment_date, pay.id
+      `).all(),
+      transfers: db.prepare('SELECT * FROM transfers ORDER BY transfer_date, id').all()
+    }))();
+    const workbook = buildExcelWorkbook([
+      {
+        name: 'Ödeme Kayıtları',
+        headers: ['Kayıt No', 'Mülk No', 'Mülk', 'Kiracı (Güncel)', 'Ay', 'Yıl', 'Ödeme Tarihi', 'Durum', 'Hesap / Ödeme Yöntemi', 'Kayıtlı Tutar', 'Kesinti', 'Gerçekleşen Tahsilat', 'Not'],
+        moneyColumns: [9, 10, 11], dateColumns: [6],
+        rows: payments.map((p: any) => [p.id, p.property_id, p.property_name, p.tenant, p.month, p.year,
+          p.payment_date, p.status, p.payment_method, p.amount_paid ?? 0, p.deduction_amount ?? 0,
+          p.status === 'Ödendi' ? p.amount_paid ?? 0 : 0, p.note])
+      },
+      {
+        name: 'Transfer ve Giderler',
+        headers: ['Kayıt No', 'İşlem Tarihi', 'İşlem Türü', 'Çıkış Hesabı', 'Hedef Hesap', 'Tutar', 'Açıklama'],
+        moneyColumns: [5], dateColumns: [1],
+        rows: transfers.map((t: any) => [t.id, t.transfer_date,
+          !t.destination_account || t.destination_account === 'Dışarıya Harcama / Gider' ? 'Gider' : 'Hesaplar Arası Transfer',
+          t.source_account, t.destination_account || 'Dışarıya Harcama / Gider', t.amount ?? 0, t.description])
+      }
+    ]);
+    const outputPath = result.filePath.toLowerCase().endsWith('.xlsx') ? result.filePath : result.filePath + '.xlsx';
+    temporaryPath = outputPath + `.${Date.now()}.tmp`;
+    await fs.promises.writeFile(temporaryPath, workbook, { flag: 'wx' });
+    await fs.promises.rename(temporaryPath, outputPath);
+    return { success: true, path: outputPath };
+  } catch (error) {
+    if (temporaryPath) await fs.promises.unlink(temporaryPath).catch(() => {});
+    console.error('Excel dışa aktarma hatası:', error);
+    return { success: false, error: 'Excel dosyası kaydedilemedi. Dosyanın açık olmadığını ve klasöre yazma izniniz olduğunu kontrol edin.' };
+  }
+});
 
 // ─── SADECE DIŞA AKTARMA (YEDEKLEME) KANALI ───
 ipcMain.handle('export-database', async () => {
@@ -349,7 +407,7 @@ ipcMain.handle('export-database', async () => {
   })
 })
 
-// ─── GÜNCELLENEN: ORTAKLAR VE KASA TOPLAM DURUMU (Çıkışlar Düşülmüş Halde) ───
+// ─── GÜNCELLENEN: HESAPLAR ARASI TRANSFER DESTEKLİ KASA ÖZETİ ───
   ipcMain.handle('get-finance-summary', () => {
     const stmt = db.prepare(`
       WITH Incomes AS (
@@ -358,6 +416,8 @@ ipcMain.handle('export-database', async () => {
           COALESCE(SUM(bekir_payi), 0) as b_in,
           COALESCE(SUM(tarik_payi), 0) as tr_in,
           COALESCE(SUM(halil_payi), 0) as h_in,
+          COALESCE(SUM(ozcam_payi), 0) as oz_in,
+          COALESCE(SUM(ozcam_insaat_payi), 0) as oi_in,
           COALESCE(SUM(CASE WHEN payment_method = 'Nakit' THEN amount_paid ELSE 0 END), 0) as n_in
         FROM payments WHERE status = 'Ödendi'
       ),
@@ -367,16 +427,31 @@ ipcMain.handle('export-database', async () => {
           COALESCE(SUM(CASE WHEN source_account = 'Havale (Bekir Çam)' THEN amount ELSE 0 END), 0) as b_out,
           COALESCE(SUM(CASE WHEN source_account = 'Havale (Tarık Çam)' THEN amount ELSE 0 END), 0) as tr_out,
           COALESCE(SUM(CASE WHEN source_account = 'Havale (Halil Çam)' THEN amount ELSE 0 END), 0) as h_out,
+          COALESCE(SUM(CASE WHEN source_account = 'Havale (Özçam Yönetim Kurulu)' THEN amount ELSE 0 END), 0) as oz_out,
+          COALESCE(SUM(CASE WHEN source_account = 'Havale (Özçam İnşaat)' THEN amount ELSE 0 END), 0) as oi_out,
           COALESCE(SUM(CASE WHEN source_account = 'Nakit' THEN amount ELSE 0 END), 0) as n_out
+        FROM transfers
+      ),
+      TransferIncomes AS (
+        SELECT
+          COALESCE(SUM(CASE WHEN destination_account = 'Havale (Tahir Çam)' THEN amount ELSE 0 END), 0) as t_ti,
+          COALESCE(SUM(CASE WHEN destination_account = 'Havale (Bekir Çam)' THEN amount ELSE 0 END), 0) as b_ti,
+          COALESCE(SUM(CASE WHEN destination_account = 'Havale (Tarık Çam)' THEN amount ELSE 0 END), 0) as tr_ti,
+          COALESCE(SUM(CASE WHEN destination_account = 'Havale (Halil Çam)' THEN amount ELSE 0 END), 0) as h_ti,
+          COALESCE(SUM(CASE WHEN destination_account = 'Havale (Özçam Yönetim Kurulu)' THEN amount ELSE 0 END), 0) as oz_ti,
+          COALESCE(SUM(CASE WHEN destination_account = 'Havale (Özçam İnşaat)' THEN amount ELSE 0 END), 0) as oi_ti,
+          COALESCE(SUM(CASE WHEN destination_account = 'Nakit' THEN amount ELSE 0 END), 0) as n_ti
         FROM transfers
       )
       SELECT 
-        (i.t_in - o.t_out) as tahir_total,
-        (i.b_in - o.b_out) as bekir_total,
-        (i.tr_in - o.tr_out) as tarik_total,
-        (i.h_in - o.h_out) as halil_total,
-        (i.n_in - o.n_out) as nakit_total
-      FROM Incomes i, Outgoes o;
+        (i.t_in + ti.t_ti - o.t_out) as tahir_total,
+        (i.b_in + ti.b_ti - o.b_out) as bekir_total,
+        (i.tr_in + ti.tr_ti - o.tr_out) as tarik_total,
+        (i.h_in + ti.h_ti - o.h_out) as halil_total,
+        (i.oz_in + ti.oz_ti - o.oz_out) as ozcam_total,
+        (i.oi_in + ti.oi_ti - o.oi_out) as ozcam_insaat_total,
+        (i.n_in + ti.n_ti - o.n_out) as nakit_total
+      FROM Incomes i, Outgoes o, TransferIncomes ti;
     `);
     return stmt.get();
   });
@@ -407,12 +482,12 @@ ipcMain.handle('export-database', async () => {
   });
 
   // ─── PARA ÇIKIŞI / TRANSFER EKLEME ───
-  ipcMain.handle('add-transfer', (_event, transferData) => {
+ipcMain.handle('add-transfer', (_event, transferData) => {
     const stmt = db.prepare(`
-      INSERT INTO transfers (source_account, amount, description, transfer_date)
-      VALUES (?, ?, ?, ?)
+      INSERT INTO transfers (source_account, destination_account, amount, description, transfer_date)
+      VALUES (?, ?, ?, ?, ?)
     `);
-    const info = stmt.run(transferData.source_account, transferData.amount, transferData.description, transferData.transfer_date);
+    const info = stmt.run(transferData.source_account, transferData.destination_account, transferData.amount, transferData.description, transferData.transfer_date);
     return { id: info.lastInsertRowid, ...transferData };
   });
 

@@ -1,7 +1,7 @@
 {
   "name": "mulk-yonetim",
   "private": true,
-  "version": "1.0.2",
+  "version": "1.0.7",
   "author": "CZT Studios",
   "description": "Mülk ve Kira Yönetim Sistemi",
   "type": "module",
@@ -12,7 +12,8 @@
   },
   "scripts": {
     "dev": "vite",
-    "build": "tsc && vite build && electron-builder",
+    "build": "tsc && vite build && electron-builder --win --publish never && node scripts/verify-release.cjs",
+    "test:updater": "node --test scripts/updater.test.cjs",
     "lint": "eslint . --ext ts,tsx --report-unused-disable-directives --max-warnings 0",
     "preview": "vite preview"
   },
@@ -71,6 +72,7 @@
       "package.json"
     ],
     "win": {
+      "artifactName": "mulk-yonetim-setup-${version}.${ext}",
       "target": [
         "nsis"
       ],

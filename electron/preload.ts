@@ -2,6 +2,7 @@ import { contextBridge, ipcRenderer } from 'electron'
 
 // React'in kullanacağı API köprüsü
 const api = {
+  checkForUpdates: () => ipcRenderer.invoke('check-for-updates'),
   fetchProperties: () => ipcRenderer.invoke('get-properties'),
   saveProperty: (propertyData: any) => ipcRenderer.invoke('add-property', propertyData),
   updateProperty: (propertyData: any) => ipcRenderer.invoke('update-property', propertyData),
@@ -18,6 +19,7 @@ const api = {
 
   getFinanceSummary: () => ipcRenderer.invoke('get-finance-summary'),
   exportDatabase: () => ipcRenderer.invoke('export-database'),
+  exportTransactionsExcel: () => ipcRenderer.invoke('export-transactions-excel'),
   
   // ─── HESAP DETAYLARI (DAİRELER) İÇİN YENİ EKLENEN KÖPRÜ ───
   getPaymentsByMethod: (method: string) => ipcRenderer.invoke('get-payments-by-method', method),

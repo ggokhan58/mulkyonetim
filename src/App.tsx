@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { collectedAmount, initialPaymentAmount } from './payment-values';
 
 // TypeScript için veritabanı yapımızın tip tanımı
 interface Property {
@@ -16,6 +17,7 @@ interface Property {
   payment_due_day: string | number;
   last_month?: string;
   last_year?: number;
+  last_amount_paid?: number | null;
   contract_start_date?: string; 
   contract_end_date?: string;   
   note?: string;
@@ -25,6 +27,21 @@ interface Property {
 function App() {
   const [properties, setProperties] = useState<Property[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [isExportingExcel, setIsExportingExcel] = useState(false);
+  const handleExportExcel = async () => {
+    if (isExportingExcel) return;
+    setIsExportingExcel(true);
+    try {
+      const result = await window.api.exportTransactionsExcel();
+      if (result.canceled) return;
+      if (!result.success) throw new Error(result.error || 'Excel çıktısı oluşturulamadı.');
+      alert('Excel dosyası kaydedildi.\n\nKonum: ' + result.path);
+    } catch (error) {
+      alert(error instanceof Error ? error.message : 'Excel çıktısı oluşturulamadı.');
+    } finally {
+      setIsExportingExcel(false);
+    }
+  };
   const [activeTab, setActiveTab] = useState('dashboard');
   
   // Modal State'leri
@@ -59,7 +76,7 @@ function App() {
   const [isTransferHistoryOpen, setIsTransferHistoryOpen] = useState(false);
   const [transferHistoryList, setTransferHistoryList] = useState<any[]>([]);
   const [transferFormData, setTransferFormData] = useState({
-    source_account: 'Nakit', amount: '', description: '', transfer_date: new Date().toISOString().split('T')[0]
+    source_account: 'Nakit', amount: '', description: '', destination_account: 'Dışarıya Harcama / Gider', transfer_date: new Date().toISOString().split('T')[0]
   });
 
   const fetchTransferHistory = async () => {
@@ -80,7 +97,7 @@ function App() {
       // @ts-ignore
       await window.api.addTransfer(payload);
       setIsTransferFormOpen(false);
-      setTransferFormData({ source_account: 'Nakit', amount: '', description: '', transfer_date: new Date().toISOString().split('T')[0] });
+      setTransferFormData({ source_account: 'Nakit', amount: '', description: '',destination_account: 'Dışarıya Harcama / Gider', transfer_date: new Date().toISOString().split('T')[0] });
       fetchFinanceSummary(); // Kasa toplamlarını güncelle (Düşülmüş halini ekrana yansıtır)
     } catch (error) { console.error("Transfer kaydedilemedi:", error); }
   };
@@ -96,7 +113,7 @@ function App() {
   };
 
   const [financeSummary, setFinanceSummary] = useState({
-    tahir_total: 0, bekir_total: 0, tarik_total: 0, halil_total: 0, nakit_total: 0
+    tahir_total: 0, bekir_total: 0, tarik_total: 0, halil_total: 0, ozcam_total: 0, ozcam_insaat_total: 0, nakit_total: 0
   });
 
   // Türkçe Ay Listesi (Grid oluşturmak için)
@@ -156,7 +173,9 @@ function App() {
         tahir_payi: method === 'Havale (Tahir Çam)' ? amountPaid : 0,
         bekir_payi: method === 'Havale (Bekir Çam)' ? amountPaid : 0,
         tarik_payi: method === 'Havale (Tarık Çam)' ? amountPaid : 0,
-        halil_payi: method === 'Havale (Halil Çam)' ? amountPaid : 0
+        halil_payi: method === 'Havale (Halil Çam)' ? amountPaid : 0,
+        ozcam_payi: method === 'Havale (Özçam Yönetim Kurulu)' ? amountPaid : 0,
+        ozcam_insaat_payi: method === 'Havale (Özçam İnşaat)' ? amountPaid : 0
       };
 
       // @ts-ignore
@@ -277,9 +296,8 @@ function App() {
   
   const expectedMonthlyRevenue = properties.reduce((acc, curr) => {
     const rent = Number(curr.rent_amount) || 0;
-    const deduction = Number(curr.deduction_amount) || 0;
     if (curr.status !== 'Boş') {
-      return acc + (rent - deduction);
+      return acc + rent;
     }
     return acc;
   }, 0);
@@ -398,10 +416,8 @@ function App() {
       if (formData.id) {
         // ID VARSA: GÜNCELLEME İŞLEMİ
         // @ts-ignore
-        const updatedProperty = await window.api.updateProperty(formattedData);
-        
-        // Tablodaki eski veriyi yeni veri ile değiştiriyoruz
-        setProperties(prev => prev.map(p => p.id === formData.id ? updatedProperty : p));
+        await window.api.updateProperty(formattedData);
+        await fetchProperties();
       } else {
         // ID YOKSA: YENİ KAYIT İŞLEMİ (Eski Kodun)
         // @ts-ignore
@@ -487,6 +503,12 @@ function App() {
           </div>
 
           <div className="flex items-center gap-4">
+            <button
+              onClick={() => { void window.api.checkForUpdates().catch(() => alert('Güncelleme kontrolü başlatılamadı. Uygulamayı yeniden açıp deneyin.')); }}
+              className="text-sm font-medium text-gray-600 hover:text-blue-600"
+            >
+              Güncellemeleri Kontrol Et
+            </button>
             <button 
               onClick={handleNewRecordClick}
               className="bg-[#09090B] hover:bg-gray-800 text-white font-medium text-sm px-5 py-2.5 rounded-xl transition-all flex items-center gap-2 shadow-lg shadow-black/5"
@@ -543,7 +565,7 @@ function App() {
                         <th className="py-4 px-6 text-center">Durum</th>
                         <th className="py-4 px-6 text-center">Tahsilat</th>
                         <th className="py-4 px-6 w-1/5">Tadilat / Kesinti</th>
-                        <th className="py-4 px-6 text-right">Kira Bedeli</th>
+                        <th className="py-4 px-6 text-right">Güncel Kira / Son Tahsilat</th>
                         <th className="py-4 px-6 text-right">İşlemler</th>
                       </tr>
                     </thead>
@@ -633,13 +655,11 @@ function App() {
                           </td>
 
                           <td className="py-4 px-6 text-right">
-                            {Number(prop.deduction_amount) > 0 ? (
-                              <div className="flex flex-col items-end">
-                                <span className="text-xs text-gray-400 line-through">₺{Number(prop.rent_amount).toLocaleString('tr-TR')}</span>
-                                <span className="font-black text-gray-900 text-base">₺{(Number(prop.rent_amount) - Number(prop.deduction_amount)).toLocaleString('tr-TR')}</span>
+                            <span className="font-black text-gray-900 text-base">₺{Number(prop.rent_amount).toLocaleString('tr-TR')}</span>
+                            {prop.last_month && (
+                              <div className="text-xs text-gray-500 mt-1">
+                                {prop.last_month} {prop.last_year}: ₺{collectedAmount(prop).toLocaleString('tr-TR')} tahsil edildi
                               </div>
-                            ) : (
-                              <span className="font-black text-gray-900 text-base">₺{Number(prop.rent_amount).toLocaleString('tr-TR')}</span>
                             )}
                           </td>
                           <td className="py-4 px-6 text-right">
@@ -863,8 +883,8 @@ function App() {
                   const occupiedProps = properties.filter(p => p.status !== 'Boş');
                   
                   const brutKira = occupiedProps.reduce((acc, curr) => acc + (Number(curr.rent_amount) || 0), 0);
-                  const toplamKesinti = occupiedProps.reduce((acc, curr) => acc + (Number(curr.deduction_amount) || 0), 0);
-                  const netKasa = brutKira - toplamKesinti;
+                  const toplamKesinti = properties.reduce((acc, curr) => acc + (curr.payment_status === 'Ödendi' ? Number(curr.deduction_amount) || 0 : 0), 0);
+                  const netKasa = properties.reduce((acc, curr) => acc + collectedAmount(curr), 0);
                   
                   const count = occupiedProps.length || 1; // Sıfıra bölünme hatasını önlemek için
                   const odendiSayisi = occupiedProps.filter(p => p.payment_status === 'Ödendi').length;
@@ -900,7 +920,7 @@ function App() {
                             <div className="text-3xl font-black text-white">₺{toplamKesinti.toLocaleString('tr-TR')}</div>
                             <p className="text-gray-500 text-[11px] mt-2 flex items-center gap-1.5">
                               <span className="w-1.5 h-1.5 rounded-full bg-orange-500 shadow-[0_0_8px_rgba(249,115,22,0.8)]"></span>
-                              Tadilat ve masraf düşümleri
+                              Her mülkün son kaydındaki ödenmiş kesintiler
                             </p>
                           </div>
                         </div>
@@ -915,13 +935,13 @@ function App() {
                           </div>
                           <div className="absolute inset-0 bg-gradient-to-br from-emerald-500/10 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-500"></div>
                           <div className="relative z-10">
-                            <h3 className="text-gray-300 text-xs font-bold uppercase tracking-wider mb-1">Aylık Net Kasa</h3>
+                            <h3 className="text-gray-300 text-xs font-bold uppercase tracking-wider mb-1">Son Kayıtlardaki Tahsilat</h3>
                             <div className="text-4xl font-black text-transparent bg-clip-text bg-gradient-to-r from-emerald-400 to-emerald-200">
                               ₺{netKasa.toLocaleString('tr-TR')}
                             </div>
                             <p className="text-emerald-500/80 text-[11px] mt-2 flex items-center gap-1.5 font-medium">
                               <span className="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
-                              Ele geçecek tahmini tutar
+                              Her mülkün son kaydı; farklı ayları içerebilir
                             </p>
                           </div>
                         </div>
@@ -934,7 +954,12 @@ function App() {
                             <svg className="w-5 h-5 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z" /></svg>
                             Tüm Zamanlar Kasa ve Ortak Dağılımı
                           </h3>
-                          <div className="flex gap-2">
+                          <div className="flex flex-wrap gap-2">
+                            <button type="button" onClick={handleExportExcel} disabled={isExportingExcel}
+                              title="Tüm dönemlerdeki ödeme, transfer ve gider kayıtlarını dışa aktarır."
+                              className="bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white px-3 py-2 rounded-lg text-xs font-bold">
+                              {isExportingExcel ? 'Hazırlanıyor…' : 'Tüm İşlemler → Excel'}
+                            </button>
                             <button 
                               onClick={() => { fetchTransferHistory(); setIsTransferHistoryOpen(true); }}
                               className="bg-gray-100 hover:bg-gray-200 text-gray-700 px-3 py-1.5 rounded-lg text-xs font-bold transition-all shadow-sm flex items-center gap-1.5"
@@ -951,7 +976,7 @@ function App() {
                             </button>
                           </div>
                         </div>
-                        <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
+                        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
                           
                           {/* NAKİT (KASA) KARTI */}
                         <div 
@@ -970,7 +995,9 @@ function App() {
                           { name: 'Tahir Çam', val: financeSummary.tahir_total, bg: 'bg-blue-50', border: 'border-blue-100', text: 'text-blue-600', valText: 'text-blue-900', method: 'Havale (Tahir Çam)' },
                           { name: 'Bekir Çam', val: financeSummary.bekir_total, bg: 'bg-indigo-50', border: 'border-indigo-100', text: 'text-indigo-600', valText: 'text-indigo-900', method: 'Havale (Bekir Çam)' },
                           { name: 'Tarık Çam', val: financeSummary.tarik_total, bg: 'bg-purple-50', border: 'border-purple-100', text: 'text-purple-600', valText: 'text-purple-900', method: 'Havale (Tarık Çam)' },
-                          { name: 'Halil Çam', val: financeSummary.halil_total, bg: 'bg-sky-50', border: 'border-sky-100', text: 'text-sky-600', valText: 'text-sky-900', method: 'Havale (Halil Çam)' }
+                          { name: 'Halil Çam', val: financeSummary.halil_total, bg: 'bg-sky-50', border: 'border-sky-100', text: 'text-sky-600', valText: 'text-sky-900', method: 'Havale (Halil Çam)' },
+                          { name: 'Özçam Yön. Kur.', val: financeSummary.ozcam_total, bg: 'bg-teal-50', border: 'border-teal-100', text: 'text-teal-600', valText: 'text-teal-900', method: 'Havale (Özçam Yönetim Kurulu)' },
+                          { name: 'Özçam İnşaat', val: financeSummary.ozcam_insaat_total, bg: 'bg-blue-50', border: 'border-blue-100', text: 'text-blue-600', valText: 'text-blue-900', method: 'Havale (Özçam İnşaat)' }
                         ].map((ortak, idx) => (
                           <div 
                             key={idx} 
@@ -1029,9 +1056,9 @@ function App() {
                             <thead>
                               <tr className="bg-gray-50/80 border-b border-gray-100 text-gray-400 text-[11px] font-black uppercase tracking-wider">
                                 <th className="py-4 px-6 w-1/3">Mülk & Kiracı</th>
-                                <th className="py-4 px-6 text-right">Brüt Kira</th>
-                                <th className="py-4 px-6 text-right">Kesinti (Tadilat)</th>
-                                <th className="py-4 px-6 text-right">Net Ödenecek</th>
+                                <th className="py-4 px-6 text-right">Güncel Kira</th>
+                                <th className="py-4 px-6 text-right">Son Kayıt Kesintisi</th>
+                                <th className="py-4 px-6 text-right">Son Kayıt Tahsilatı</th>
                                 <th className="py-4 px-6 text-center">Durum</th>
                                 <th className="py-4 px-6 text-center">Detay</th>
                               </tr>
@@ -1044,7 +1071,7 @@ function App() {
                               ) : occupiedProps.map((prop, index) => {
                                 const rent = Number(prop.rent_amount) || 0;
                                 const deduction = Number(prop.deduction_amount) || 0;
-                                const net = rent - deduction;
+                                const net = collectedAmount(prop);
                                 
                                 return (
                                   <tr 
@@ -1086,6 +1113,7 @@ function App() {
                                     
                                     <td className="py-4 px-6 text-right">
                                       <span className="font-black text-gray-900 text-base">₺{net.toLocaleString('tr-TR')}</span>
+                                      <div className="text-xs text-gray-500">{prop.last_month ? `${prop.last_month} ${prop.last_year}` : 'Kayıt yok'}</div>
                                     </td>
                                     
                                     <td className="py-4 px-6 text-center">
@@ -1242,6 +1270,16 @@ function App() {
                     <h1 className="text-2xl font-bold text-gray-900 tracking-tight">Sistem Ayarları</h1>
                     <p className="text-gray-500 text-sm mt-1">Veritabanı yönetimi ve dışa aktarım işlemleri.</p>
                   </div>
+                </div>
+
+                <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-8 max-w-2xl">
+                  <h3 className="font-bold text-gray-900 text-lg mb-2">Excel İşlem Raporu</h3>
+                  <p className="text-sm text-gray-500 mb-6">Tüm dönemlere ait ödeme kayıtları, hesaplar arası transferler ve giderler ayrı sayfalarda .xlsx olarak kaydedilir. Tutarlar sayısaldır; Excel'de filtreleyebilir ve toplayabilirsiniz.</p>
+                  <button type="button" onClick={handleExportExcel} disabled={isExportingExcel}
+                              title="Tüm dönemlerdeki ödeme, transfer ve gider kayıtlarını dışa aktarır."
+                              className="bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white px-3 py-2 rounded-lg text-xs font-bold">
+                              {isExportingExcel ? 'Hazırlanıyor…' : 'Tüm İşlemler → Excel'}
+                            </button>
                 </div>
 
                 {/* VERİTABANI YEDEKLEME KARTI */}
@@ -1512,7 +1550,7 @@ function App() {
             <div className="px-6 py-4 border-b border-gray-100 flex justify-between items-center bg-[#09090B] text-white">
               <div>
                 <h3 className="text-lg font-bold">{selectedProperty.name} — Ödeme Geçmişi</h3>
-                <p className="text-xs text-gray-400 mt-0.5">{selectedProperty.tenant || 'Kiracı Yok'} | Sabit Kira: ₺{Number(selectedProperty.rent_amount).toLocaleString('tr-TR')}</p>
+                <p className="text-xs text-gray-400 mt-0.5">{selectedProperty.tenant || 'Kiracı Yok'} | Güncel Kira: ₺{Number(selectedProperty.rent_amount).toLocaleString('tr-TR')} — Geçmiş ödemeler kayıtlı tutarlarıyla gösterilir.</p>
               </div>
               <button 
                 onClick={() => { setIsPaymentModalOpen(false); setIsPaymentFormOpen(false); }}
@@ -1560,7 +1598,7 @@ function App() {
                             year: 2026,
                             status: payment?.status || 'Ödendi',
                             payment_method: payment?.payment_method || 'Nakit',
-                            amount_paid: payment ? payment.amount_paid.toString() : (Number(selectedProperty.rent_amount) - Number(selectedProperty.deduction_amount)).toString(),
+                            amount_paid: initialPaymentAmount(payment, selectedProperty.rent_amount, selectedYear, monthsList.indexOf(month)),
                             deduction_amount: payment?.deduction_amount?.toString() || '',
                             payment_date: payment?.payment_date || new Date().toISOString().split('T')[0],
                             note: payment?.note || ''
@@ -1650,6 +1688,8 @@ function App() {
                         <option value="Havale (Bekir Çam)">Havale (Bekir Çam)</option>
                         <option value="Havale (Tarık Çam)">Havale (Tarık Çam)</option>
                         <option value="Havale (Halil Çam)">Havale (Halil Çam)</option>
+                        <option value="Havale (Özçam Yönetim Kurulu)">Havale (Özçam Yönetim Kurulu)</option>
+                  <option value="Havale (Özçam İnşaat)">Havale (Özçam İnşaat)</option>
                       </select>
                     </div>
 
@@ -1659,10 +1699,12 @@ function App() {
                         <input 
                           type="number" 
                           value={paymentFormData.amount_paid} 
+                          placeholder="Bu dönemde alınan tutar"
                           onChange={(e) => setPaymentFormData(prev => ({ ...prev, amount_paid: e.target.value }))}
                           required
                           className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm bg-gray-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/20"
                         />
+                        <p className="text-[10px] text-gray-500">Geçmiş aylar için o dönemde alınan tutarı girin.</p>
                       </div>
                       <div className="space-y-1">
                         <label className="text-[11px] font-bold text-orange-500 uppercase">Kesinti (₺)</label>
@@ -1839,9 +1881,28 @@ function App() {
                   <option value="Havale (Bekir Çam)">Bekir Çam Hesabı</option>
                   <option value="Havale (Tarık Çam)">Tarık Çam Hesabı</option>
                   <option value="Havale (Halil Çam)">Halil Çam Hesabı</option>
+                  <option value="Havale (Özçam Yönetim Kurulu)">Özçam Yön. Kur. Hesabı</option>
+                  <option value="Havale (Özçam İnşaat)">Özçam İnşaat Kasası</option>
                 </select>
               </div>
-
+                {/* HEDEF HESAP (YENİ EKLENEN KOD) */}
+              <div className="space-y-1">
+                <label className="text-xs font-bold text-blue-500 uppercase">Para Nereye Gidecek?</label>
+                <select 
+                  value={transferFormData.destination_account} 
+                  onChange={(e) => setTransferFormData(prev => ({ ...prev, destination_account: e.target.value }))}
+                  className="w-full border border-blue-200 rounded-lg px-3 py-2 text-sm bg-blue-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/20"
+                >
+                  <option value="Dışarıya Harcama / Gider">Dışarıya Harcama / Gider</option>
+                  <option value="Nakit">Nakit Kasa'ya Aktar</option>
+                  <option value="Havale (Tahir Çam)">Tahir Çam Hesabına Aktar</option>
+                  <option value="Havale (Bekir Çam)">Bekir Çam Hesabına Aktar</option>
+                  <option value="Havale (Tarık Çam)">Tarık Çam Hesabına Aktar</option>
+                  <option value="Havale (Halil Çam)">Halil Çam Hesabına Aktar</option>
+                  <option value="Havale (Özçam Yönetim Kurulu)">Özçam Yön. Kur. Hesabına Aktar</option>
+                  <option value="Havale (Özçam İnşaat)">Özçam İnşaat Kasasına Aktar</option>
+                </select>
+              </div>
               <div className="space-y-1">
                 <label className="text-xs font-bold text-gray-500 uppercase">Çıkan Tutar (₺)</label>
                 <input 
@@ -1921,9 +1982,12 @@ function App() {
                     {transferHistoryList.map((item, idx) => (
                       <tr key={idx} className="hover:bg-gray-50 transition-colors">
                         <td className="py-3 px-6 text-gray-600 font-medium">{new Date(item.transfer_date).toLocaleDateString('tr-TR')}</td>
-                        <td className="py-3 px-6">
-                          <span className="inline-flex items-center gap-1.5 px-2 py-1 rounded text-[11px] font-bold bg-gray-100 text-gray-700 border border-gray-200">
-                            {item.source_account}
+                        <td className="py-3 px-6 flex flex-col gap-1 items-start">
+                          <span className="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold bg-orange-100 text-orange-700 border border-orange-200">
+                            Çıkış: {item.source_account}
+                          </span>
+                          <span className="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold bg-blue-100 text-blue-700 border border-blue-200">
+                            Giriş: {item.destination_account}
                           </span>
                         </td>
                         <td className="py-3 px-6 text-gray-600 text-xs">{item.description}</td>
