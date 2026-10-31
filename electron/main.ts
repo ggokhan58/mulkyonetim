@@ -112,6 +112,7 @@ function createWindow(): void {
   const preloadPath = path.join(currentDir, 'preload.cjs'); // Vite standart olarak .mjs veya .js kullanır
 
   const mainWindow = new BrowserWindow({
+    title: `Mülk Yönetim — ${app.getVersion()}`,
     width: 1280,
     height: 800,
     show: false,
@@ -121,6 +122,11 @@ function createWindow(): void {
       sandbox: false
     }
   })
+
+  mainWindow.on('page-title-updated', (event) => {
+    event.preventDefault();
+    mainWindow.setTitle(`Mülk Yönetim — ${app.getVersion()}`);
+  });
 
   mainWindow.on('ready-to-show', () => {
     mainWindow.show()
@@ -143,6 +149,7 @@ function createWindow(): void {
 }
 
 app.whenReady().then(() => {
+  ipcMain.handle('get-app-version', () => app.getVersion());
   startUpdates();
   
   // ─── ANA TABLOYU ÇEKME SORGUSU (Güncellendi) ───

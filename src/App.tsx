@@ -25,6 +25,22 @@ interface Property {
 }
 
 function App() {
+  const [appVersion, setAppVersion] = useState('');
+  const [isCheckingUpdates, setIsCheckingUpdates] = useState(false);
+  const handleCheckUpdates = async () => {
+    if (isCheckingUpdates) return;
+    setIsCheckingUpdates(true);
+    try {
+      await window.api.checkForUpdates();
+    } catch {
+      alert('Güncelleme kontrolü başlatılamadı. Uygulamayı yeniden açıp deneyin.');
+    } finally {
+      setIsCheckingUpdates(false);
+    }
+  };
+  useEffect(() => {
+    window.api.getAppVersion().then(setAppVersion).catch(() => setAppVersion(''));
+  }, []);
   const [properties, setProperties] = useState<Property[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isExportingExcel, setIsExportingExcel] = useState(false);
@@ -475,6 +491,13 @@ function App() {
               </button>
             ))}
           </nav>
+          <div className="mx-4 mt-6 p-3 rounded-xl border border-blue-500/30 bg-blue-500/10">
+            <p className="text-xs text-gray-300 mb-3">Mülk Yönetim {appVersion && `v${appVersion}`}</p>
+            <button type="button" onClick={handleCheckUpdates} disabled={isCheckingUpdates}
+              className="w-full rounded-lg bg-blue-600 hover:bg-blue-500 disabled:opacity-60 px-3 py-3 text-sm font-semibold text-white transition-colors">
+              {isCheckingUpdates ? 'Kontrol / indirme sürüyor…' : 'Güncellemeleri Kontrol Et'}
+            </button>
+          </div>
         </div>
 
         <div className="p-4 m-4 bg-[#18181B] rounded-xl flex items-center gap-3 border border-white/5">
@@ -503,12 +526,6 @@ function App() {
           </div>
 
           <div className="flex items-center gap-4">
-            <button
-              onClick={() => { void window.api.checkForUpdates().catch(() => alert('Güncelleme kontrolü başlatılamadı. Uygulamayı yeniden açıp deneyin.')); }}
-              className="text-sm font-medium text-gray-600 hover:text-blue-600"
-            >
-              Güncellemeleri Kontrol Et
-            </button>
             <button 
               onClick={handleNewRecordClick}
               className="bg-[#09090B] hover:bg-gray-800 text-white font-medium text-sm px-5 py-2.5 rounded-xl transition-all flex items-center gap-2 shadow-lg shadow-black/5"
@@ -1268,8 +1285,18 @@ function App() {
                 <div className="flex justify-between items-end border-b border-gray-200/50 pb-4">
                   <div>
                     <h1 className="text-2xl font-bold text-gray-900 tracking-tight">Sistem Ayarları</h1>
-                    <p className="text-gray-500 text-sm mt-1">Veritabanı yönetimi ve dışa aktarım işlemleri.</p>
+                    <p className="text-gray-500 text-sm mt-1">Uygulama güncellemeleri, veritabanı yönetimi ve dışa aktarım işlemleri.</p>
                   </div>
+                </div>
+
+                <div className="bg-white rounded-2xl border border-blue-100 shadow-sm p-8 max-w-2xl">
+                  <h2 className="text-lg font-bold text-gray-900">Uygulama Güncellemeleri</h2>
+                  <p className="text-sm text-gray-500 mt-2">Kurulu sürüm: {appVersion || 'Sürüm bilgisi alınamadı'}</p>
+                  <p className="text-sm text-gray-500 mt-2 mb-4">Yeni sürümleri kontrol edin. İndirme tamamlandığında yeniden başlatarak kurabilirsiniz.</p>
+                  <button type="button" onClick={handleCheckUpdates} disabled={isCheckingUpdates}
+                    className="bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white rounded-xl px-5 py-3 text-sm font-semibold">
+                    {isCheckingUpdates ? 'Kontrol / indirme sürüyor…' : 'Güncellemeleri Kontrol Et'}
+                  </button>
                 </div>
 
                 <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-8 max-w-2xl">

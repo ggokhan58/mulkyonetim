@@ -24,6 +24,7 @@ declare namespace NodeJS {
 // Used in Renderer process, expose in `preload.ts`
 interface Window {
   api: {
+    getAppVersion: () => Promise<string>;
     checkForUpdates: () => Promise<void>;
     fetchProperties: () => Promise<any[]>;
     saveProperty: (propertyData: any) => Promise<any>;

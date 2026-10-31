@@ -2,6 +2,7 @@ import { contextBridge, ipcRenderer } from 'electron'
 
 // React'in kullanacağı API köprüsü
 const api = {
+  getAppVersion: () => ipcRenderer.invoke('get-app-version'),
   checkForUpdates: () => ipcRenderer.invoke('check-for-updates'),
   fetchProperties: () => ipcRenderer.invoke('get-properties'),
   saveProperty: (propertyData: any) => ipcRenderer.invoke('add-property', propertyData),
