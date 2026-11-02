@@ -24,6 +24,9 @@ function compile(source) {
 const context = { exports: {} };
 vm.runInNewContext(compile(fs.readFileSync(path.join(__dirname, '../src/payment-values.ts'), 'utf8')), context);
 const { collectedAmount, initialPaymentAmount } = context.exports;
+const rentContext = { exports: {} };
+vm.runInNewContext(compile(fs.readFileSync(path.join(__dirname, '../src/rent-history.ts'), 'utf8')), rentContext);
+const { updatedRentHistory, periodRent, readRentHistory } = rentContext.exports;
 
 function setup() {
   const db = new DatabaseSync(':memory:', { enableDoubleQuotedStringLiterals: true });
@@ -33,7 +36,7 @@ function setup() {
     }
   }
   const call = (name, data) => {
-    const scope = { db, data };
+    const scope = { db, data, updatedRentHistory };
     return vm.runInNewContext(compile(`const handler = ${handlers[name]}; handler(null, data);`), scope);
   };
   return { db, call };
@@ -44,7 +47,7 @@ test('rent increases preserve past payments, deductions, account balances and su
   try {
     const property = { name: 'Daire', address: '', status: 'Dolu', rent_amount: 10000,
       tenant: 'Kiracı', tenant_phone: '', tenant_email: '', payment_status: '—', deduction_amount: 0,
-      deduction_note: '', payment_due_day: 1, contract_start_date: '', contract_end_date: '', note: '', contract_file_path: '' };
+      deduction_note: '', payment_due_day: 1, contract_start_date: '2026-01-01', contract_end_date: '', note: '', contract_file_path: '' };
     const saved = call('add-property', property);
     const payment = { property_id: saved.id, month: 'Aralık', year: 2026, payment_date: '2026-12-05',
       status: 'Ödendi', amount_paid: 8500, deduction_amount: 1500, note: 'Tadilat', payment_method: 'Nakit',
@@ -53,9 +56,15 @@ test('rent increases preserve past payments, deductions, account balances and su
     const before = call('get-payments', saved.id);
     const cashBefore = call('get-finance-summary');
     for (const rent_amount of [15000, 20000]) {
-      call('update-property', { ...saved, rent_amount });
+      call('update-property', { ...saved, rent_amount, rent_effective_date: rent_amount === 15000 ? '2027-01-01' : '2027-02-01' });
       const summary = call('get-properties')[0];
       assert.equal(summary.rent_amount, rent_amount);
+      const history = readRentHistory(summary.rent_history);
+      assert.equal(periodRent(history, 2026, 11, 1), 10000);
+      assert.equal(periodRent(history, 2027, 0, 1), 15000);
+      if (rent_amount === 20000) assert.equal(periodRent(history, 2027, 1, 1), 20000);
+      assert.throws(() => call('update-property', { ...saved, rent_amount: 30000, rent_effective_date: '2025-01-01' }), /sonra/);
+      assert.equal(call('get-properties')[0].rent_amount, rent_amount);
       assert.equal(collectedAmount(summary), 8500);
       assert.equal(summary.deduction_amount, 1500);
       assert.deepEqual(call('get-payments', saved.id), before);
@@ -82,4 +91,24 @@ test('historical entries keep their amounts; missing past periods require explic
   assert.equal(initialPaymentAmount(undefined, 20000, 2026, 11, today), '');
   assert.equal(initialPaymentAmount(undefined, 20000, 2027, 0, today), '20000');
   assert.equal(initialPaymentAmount(undefined, 20000, 2027, 1, today), '20000');
+});
+
+test('dated agreements retain each period, boundaries, future rents and unknown history', () => {
+  let previous = { rent_amount: 10000, rent_history: JSON.stringify([{ effective_date: '2026-01-01', amount: 10000 }]) };
+  let history = updatedRentHistory(previous, { rent_amount: 15000, rent_effective_date: '2026-06-15' });
+  previous = { ...previous, rent_amount: 15000, rent_history: history };
+  history = updatedRentHistory(previous, { rent_amount: 20000, rent_effective_date: '2027-01-01' });
+  const periods = readRentHistory(history);
+  assert.equal(periodRent(periods, 2025, 11, 1), undefined);
+  assert.equal(periodRent(periods, 2026, 5, 14), 10000);
+  assert.equal(periodRent(periods, 2026, 5, 15), 15000);
+  assert.equal(periodRent(periods, 2026, 11, 31), 15000);
+  assert.equal(periodRent(periods, 2027, 0, 1), 20000);
+  assert.equal(periodRent(periods, 2028, 1, 31), 20000);
+  assert.throws(() => updatedRentHistory(previous, { rent_amount: 25000 }), /tarihi/);
+  assert.throws(() => updatedRentHistory(previous, { rent_amount: 25000, rent_effective_date: '2026-06-15' }), /sonra/);
+  assert.throws(() => updatedRentHistory(previous, { rent_amount: 25000, rent_effective_date: '2027-02-30' }), /tarihi/);
+  assert.equal(updatedRentHistory(previous, { rent_amount: 15000 }), previous.rent_history);
+  const unknown = readRentHistory(updatedRentHistory({ rent_amount: 10000 }, { rent_amount: 20000, rent_effective_date: '2026-11-01' }));
+  assert.equal(periodRent(unknown, 2026, 9, 1), undefined);
 });

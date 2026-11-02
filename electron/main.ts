@@ -1,3 +1,4 @@
+import { updatedRentHistory } from '../src/rent-history';
 import { app, shell, BrowserWindow, ipcMain, dialog } from 'electron'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -93,6 +94,7 @@ try { db.exec('ALTER TABLE properties ADD COLUMN contract_start_date TEXT'); } c
 try { db.exec('ALTER TABLE properties ADD COLUMN contract_end_date TEXT'); } catch (e) {}
 try { db.exec('ALTER TABLE properties ADD COLUMN note TEXT'); } catch (e) {}
 try { db.exec('ALTER TABLE properties ADD COLUMN contract_file_path TEXT'); } catch (e) {}
+try { db.exec("ALTER TABLE properties ADD COLUMN rent_history TEXT DEFAULT '[]'"); } catch (e) {}
 // --- YENİ EKLENEN HAVALE VE PAY SÜTUNLARI ---
 try { db.exec("ALTER TABLE payments ADD COLUMN payment_method TEXT DEFAULT 'Nakit'"); } catch (e) {}
 try { db.exec('ALTER TABLE payments ADD COLUMN tahir_payi REAL DEFAULT 0'); } catch (e) {}
@@ -169,7 +171,7 @@ app.whenReady().then(() => {
         FROM payments
       )
       SELECT 
-        p.id, p.name, p.address, p.status, p.rent_amount, p.tenant, p.tenant_phone, p.tenant_email, p.payment_due_day,p.contract_start_date, p.contract_end_date,p.note, p.contract_file_path,
+        p.id, p.name, p.address, p.status, p.rent_history, p.rent_amount, p.tenant, p.tenant_phone, p.tenant_email, p.payment_due_day,p.contract_start_date, p.contract_end_date,p.note, p.contract_file_path,
         COALESCE(lp.status, '—') as payment_status,
         COALESCE(lp.note, '') as deduction_note,
         COALESCE(lp.deduction_amount, 0) as deduction_amount,
@@ -183,13 +185,14 @@ app.whenReady().then(() => {
   });
 
 ipcMain.handle('add-property', (_event, property) => {
+    const history = updatedRentHistory(null, property);
     try {
       // Sütun sayısı, soru işareti sayısı ve gönderilen veri sayısı (11) eşitlendi.
       const stmt = db.prepare(`
         INSERT INTO properties (
-          name, address, status, rent_amount, tenant, tenant_phone, tenant_email, payment_status, deduction_amount, deduction_note, payment_due_day,contract_start_date, contract_end_date,note, contract_file_path
+          name, address, status, rent_amount, tenant, tenant_phone, tenant_email, payment_status, deduction_amount, deduction_note, payment_due_day,contract_start_date, contract_end_date,note, contract_file_path, rent_history
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `);
       
       const info = stmt.run(
@@ -207,10 +210,11 @@ ipcMain.handle('add-property', (_event, property) => {
         property.contract_start_date, 
         property.contract_end_date,
         property.note,
-        property.contract_file_path
+        property.contract_file_path,
+        history
       );
       
-      return { id: info.lastInsertRowid, ...property };
+      return { ...property, id: info.lastInsertRowid, rent_history: history };
     } catch (error) {
       console.error("Veritabanına kayıt eklenirken hata oluştu:", error);
       // Hatayı fırlatarak React tarafındaki catch bloğunun (alert'in) çalışmasını sağlıyoruz.
@@ -221,9 +225,12 @@ ipcMain.handle('add-property', (_event, property) => {
 
   // --- DÜZENLEME YAPMA ---
   ipcMain.handle('update-property', (_event, property) => {
+    const previous = db.prepare('SELECT * FROM properties WHERE id = ?').get(property.id);
+    if (!previous) throw new Error('Mülk bulunamadı.');
+    const history = updatedRentHistory(previous, property);
     const stmt = db.prepare(`
       UPDATE properties 
-      SET name = ?, address = ?, status = ?, rent_amount = ?, tenant = ?, tenant_phone = ?, tenant_email = ?, payment_status = ?, deduction_amount = ?, deduction_note = ?, payment_due_day = ?, contract_start_date = ?, contract_end_date = ?, note = ?, contract_file_path = ?
+      SET name = ?, address = ?, status = ?, rent_amount = ?, tenant = ?, tenant_phone = ?, tenant_email = ?, payment_status = ?, deduction_amount = ?, deduction_note = ?, payment_due_day = ?, contract_start_date = ?, contract_end_date = ?, note = ?, contract_file_path = ?, rent_history = ?
       WHERE id = ?
     `);
     
@@ -243,6 +250,7 @@ ipcMain.handle('add-property', (_event, property) => {
       property.contract_end_date,
       property.note,
       property.contract_file_path,
+      history,
       property.id // Hangi satırın güncelleneceğini belirten ID
     );
     

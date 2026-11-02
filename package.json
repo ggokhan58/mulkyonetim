@@ -1,7 +1,7 @@
 {
   "name": "mulk-yonetim",
   "private": true,
-  "version": "1.0.8",
+  "version": "1.0.9",
   "author": "CZT Studios",
   "description": "Mülk ve Kira Yönetim Sistemi",
   "type": "module",

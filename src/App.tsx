@@ -1,5 +1,6 @@
+import { readRentHistory, periodRent } from './rent-history';
 import React, { useState, useEffect } from 'react';
-import { collectedAmount, initialPaymentAmount } from './payment-values';
+import { collectedAmount } from './payment-values';
 
 // TypeScript için veritabanı yapımızın tip tanımı
 interface Property {
@@ -8,6 +9,8 @@ interface Property {
   address: string;
   status: string;
   rent_amount: string | number;
+  rent_history?: string;
+  rent_effective_date?: string;
   tenant: string;
   tenant_phone?: string; 
   tenant_email?: string;
@@ -357,10 +360,8 @@ function App() {
         // 2. Eğer mevcut bir kayıt düzenleniyorsa, anında veritabanına kaydet (Auto-Save)
         if (formData.id) {
           const formattedData = {
-            ...formData,
-            rent_amount: Number(formData.rent_amount) || 0,
-            deduction_amount: Number(formData.deduction_amount) || 0,
-            payment_due_day: Number(formData.payment_due_day) || 1,
+            ...properties.find(p => p.id === formData.id),
+            rent_effective_date: '',
             contract_file_path: newPathsString // Yeni dosya yolunu ekle
           };
           
@@ -386,10 +387,8 @@ function App() {
     // 2. Veritabanını anında güncelle
     if (formData.id) {
        const formattedData = {
-            ...formData,
-            rent_amount: Number(formData.rent_amount) || 0,
-            deduction_amount: Number(formData.deduction_amount) || 0,
-            payment_due_day: Number(formData.payment_due_day) || 1,
+            ...properties.find(p => p.id === formData.id),
+            rent_effective_date: '',
             contract_file_path: newPathsString
        };
        // @ts-ignore
@@ -413,7 +412,7 @@ function App() {
 
   // Düzenle Butonuna Tıklanınca
   const handleEditClick = (property: Property) => {
-    setFormData(property); // Seçili mülkün verilerini forma doldur
+    setFormData({ ...property, rent_effective_date: '' }); // Seçili mülkün verilerini forma doldur
     setIsModalOpen(true);  // Modalı aç
   };
 
@@ -447,7 +446,7 @@ function App() {
       
     } catch (error) {
       console.error("Kayıt işlemi sırasında hata oluştu:", error);
-      alert("İşlem gerçekleştirilemedi.");
+      alert(error instanceof Error ? error.message : "İşlem gerçekleştirilemedi.");
     }
   };
 
@@ -1422,6 +1421,16 @@ function App() {
                   <label className="text-xs font-bold text-gray-500 uppercase tracking-wide">Aylık Kira (₺)</label>
                   <input type="number" name="rent_amount" value={formData.rent_amount} onChange={handleInputChange} required className="w-full border border-gray-200 rounded-lg px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 bg-gray-50 focus:bg-white" placeholder="Örn: 22000" />
                 </div>
+                <div className="col-span-2">
+                  <label className="block text-sm font-semibold text-gray-700 mb-1">Yeni tutarın geçerlilik tarihi</label>
+                  <input type="date" name="rent_effective_date" value={formData.rent_effective_date || ''} onChange={handleInputChange}
+                    required={!formData.id || Number(formData.rent_amount) !== Number(properties.find(p => p.id === formData.id)?.rent_amount)}
+                    className="w-full border border-gray-200 rounded-lg px-4 py-2.5 text-sm" />
+                  <p className="text-xs text-gray-500 mt-1">Yeni tutar, bu tarihten sonraki sözleşmeye kadar geçerlidir. Aylık kira, ödeme gününe göre belirlenir; ay içinde bölünmez. Kayıtlı tahsilatlar değişmez.</p>
+                  {readRentHistory(formData.rent_history).map(period => (
+                    <p key={period.effective_date} className="text-xs text-gray-600 mt-1">{period.effective_date}: ₺{period.amount.toLocaleString('tr-TR')}</p>
+                  ))}
+                </div>
                 {/* YENİ EKLENEN ÖDEME GÜNÜ ALANI */}
                 <div className="space-y-1 md:col-span-1">
                   <label className="text-xs font-bold text-gray-500 uppercase tracking-wide">Ödeme Günü</label>
@@ -1577,7 +1586,7 @@ function App() {
             <div className="px-6 py-4 border-b border-gray-100 flex justify-between items-center bg-[#09090B] text-white">
               <div>
                 <h3 className="text-lg font-bold">{selectedProperty.name} — Ödeme Geçmişi</h3>
-                <p className="text-xs text-gray-400 mt-0.5">{selectedProperty.tenant || 'Kiracı Yok'} | Güncel Kira: ₺{Number(selectedProperty.rent_amount).toLocaleString('tr-TR')} — Geçmiş ödemeler kayıtlı tutarlarıyla gösterilir.</p>
+                <p className="text-xs text-gray-400 mt-0.5">{selectedProperty.tenant || 'Kiracı Yok'} | Son Sözleşme Kirası: ₺{Number(selectedProperty.rent_amount).toLocaleString('tr-TR')} — Geçmiş ödemeler kayıtlı tutarlarıyla gösterilir.</p>
               </div>
               <button 
                 onClick={() => { setIsPaymentModalOpen(false); setIsPaymentFormOpen(false); }}
@@ -1611,6 +1620,7 @@ function App() {
                 <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
                   {monthsList.map((month) => {
                     const payment = getPaymentForMonth(month);
+                    const expectedRent = periodRent(readRentHistory(selectedProperty.rent_history), selectedYear, monthsList.indexOf(month), Number(selectedProperty.payment_due_day));
                     let statusStyle = "bg-gray-50 border-gray-200 text-gray-400";
                     if (payment?.status === 'Ödendi') statusStyle = "bg-emerald-50 border-emerald-200 text-emerald-800 shadow-sm";
                     if (payment?.status === 'Gecikti') statusStyle = "bg-red-50 border-red-200 text-red-800 shadow-sm";
@@ -1622,10 +1632,10 @@ function App() {
                           setPaymentFormData({
                             id: payment?.id || undefined,
                             month: month,
-                            year: 2026,
+                            year: selectedYear,
                             status: payment?.status || 'Ödendi',
                             payment_method: payment?.payment_method || 'Nakit',
-                            amount_paid: initialPaymentAmount(payment, selectedProperty.rent_amount, selectedYear, monthsList.indexOf(month)),
+                            amount_paid: payment ? String(payment.amount_paid ?? 0) : expectedRent === undefined ? '' : String(expectedRent),
                             deduction_amount: payment?.deduction_amount?.toString() || '',
                             payment_date: payment?.payment_date || new Date().toISOString().split('T')[0],
                             note: payment?.note || ''
@@ -1657,7 +1667,7 @@ function App() {
                             <div className="text-[10px] opacity-75 mt-0.5">{payment.payment_date}</div>
                           </div>
                         ) : (
-                          <span className="text-[11px] text-gray-400 italic mt-auto">Kayıt Girilmedi</span>
+                          <span className="text-[11px] text-gray-400 italic mt-auto">{expectedRent === undefined ? 'Sözleşme tutarı bilinmiyor' : `Sözleşme: ₺${expectedRent.toLocaleString('tr-TR')}`}</span>
                         )}
                         
                         <div className="absolute inset-0 bg-blue-600/5 rounded-xl opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center text-xs font-bold text-blue-700">
